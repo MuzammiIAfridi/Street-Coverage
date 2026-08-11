@@ -1,1 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Version 4 - 300m Street Coverage</title>
 
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      crossorigin="">
+
+<style>
+html,body,#map{height:100%;margin:0}
+body{font-family:Arial,sans-serif;overflow:hidden}
+#map{width:100%;background:#ddd}
+
+.header-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.header-row h3{margin:0}
+.panel-toggle{background:#555;color:white;border:0;border-radius:8px;width:42px;height:38px;font-size:20px;font-weight:bold;cursor:pointer}
+.panel.collapsed{padding-bottom:8px}
+.panel.collapsed .panel-content{display:none}
+.panel{
+  position:absolute;z-index:1000;top:10px;left:10px;right:10px;
+  max-width:680px;margin:auto;background:white;border-radius:14px;
+  padding:12px;box-shadow:0 3px 18px #0004;
+}
+h3{margin:0 0 8px;font-size:20px}
+textarea{
+  width:100%;height:105px;box-sizing:border-box;border:1px solid #aaa;
+  border-radius:9px;padding:10px;font-size:15px;font-family:monospace;
+}
+.row{display:flex;gap:7px;flex-wrap:wrap;margin-top:7px}
+button,select{
+  border:0;border-radius:9px;padding:10px 13px;font-size:14px;
+  font-weight:bold;cursor:pointer
+}
+#load{background:#1976d2;color:white}
+#start{background:#198754;color:white}
+#stop{background:#bb2636;color:white}
+#reset{background:#333;color:white}
+#center{background:#6f42c1;color:white}
+#expand{background:#0d6efd;color:white}
+#status{font-size:13px;font-weight:bold;margin-top:8px;line-height:1.4}
+.small{font-size:12px;color:#555;line-height:1.35;margin-top:4px}
+.coverage-legend{display:flex;gap:10px;flex-wrap:wrap;margin:7px 0;font-size:11px;font-weight:bold}
+.coverage-legend span{display:flex;align-items:center;gap:4px}
+.road-purple,.road-green{width:24px;height:5px;border-radius:5px;display:inline-block}
+.road-purple{background:#7b35e8}.road-green{background:#16a34a}
+.site-blue{width:14px;height:14px;border-radius:50%;display:inline-block;background:#1976d233;border:2px solid #1976d2}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;font-weight:bold;margin-top:8px}
+.legend span{display:flex;align-items:center;gap:5px}
+.legend-purple,.legend-green{display:inline-block;width:22px;height:6px;border-radius:5px}
+.legend-purple{background:#7b35e8}
+.legend-green{background:#16a34a}
+
+.site-label{
+  background:white;border:1px solid #333;border-radius:5px;
+  padding:2px 5px;font-weight:bold;font-size:11px;box-shadow:0 1px 4px #0005
+}
+
+/* Google-Maps-like navigation arrow */
+.gps-arrow-wrap{
+  width:42px;height:42px;display:flex;align-items:center;justify-content:center;
+  transform-origin:center center;
+}
+.gps-arrow{
+  width:0;height:0;
+  border-left:11px solid transparent;
+  border-right:11px solid transparent;
+  border-bottom:34px solid #1976d2;
+  filter:drop-shadow(0 1px 2px #0008);
+  position:relative;
+}
+.gps-arrow:after{
+  content:"";
+  position:absolute;left:-5px;top:8px;
+  width:10px;height:18px;background:white;
+  clip-path:polygon(50% 0,100% 100%,50% 78%,0 100%);
+  opacity:.85;
+}
+.gps-pulse{
+  position:absolute;width:44px;height:44px;border-radius:50%;
+  background:#1976d233;border:1px solid #1976d266;
+}
+
+.covered-road{
+  stroke:#16a34a;stroke-width:10;opacity:1;
+  stroke-linecap:round;stroke-linejoin:round;
+  z-index:900;
+}
+.uncovered-road{
+  stroke:#7b35e8;stroke-width:5;opacity:.85;
+  stroke-linecap:round;stroke-linejoin:round;
+}
+.coverage-circle{fill:#1976d2;fill-opacity:.07;stroke:#1976d2;stroke-width:3;opacity:.9}
+.area-label{
+  background:white;border:1px solid #1976d2;border-radius:6px;
+  padding:3px 6px;font-size:11px;font-weight:bold;color:#155a9c;
+  box-shadow:0 1px 4px #0003
+}
+
+#map.fullscreen{position:fixed;inset:0;z-index:999}
+.map-toggle{
+  position:fixed;right:14px;bottom:18px;z-index:2000;
+  width:48px;height:48px;border:0;border-radius:50%;
+  background:white;color:#222;font-size:24px;font-weight:bold;
+  box-shadow:0 2px 10px #0006;cursor:pointer;
+}
+.map-toggle:hover{background:#f2f2f2}
+</style>
+</head>
+
+<body>
+<div id="map"></div>
+<button id="mapToggle" class="map-toggle" aria-label="Expand or close full map">⛶</button>
+
+<div class="panel" id="panel">
+  <div class="header-row">
+    <h3>🚗 Version 4 — 300m Street Coverage</h3>
+    <button id="panelToggle" class="panel-toggle" title="Collapse controls">⌃</button>
+  </div>
+
+<div class="panel-content">
+  <div class="coverage-legend">
+    <span><i class="road-purple"></i> Street inside 300 m</span>
+    <span><i class="road-green"></i> Covered street</span>
+    <span><i class="site-blue"></i> 300 m area</span>
+  </div>
+  <textarea id="sites" placeholder="One site per line:
+LHR1111, 31.4623, 74.2952
+LHR2222, 31.4601, 74.2980"></textarea>
+
+  <div class="row">
+    <button id="load">Load Sites</button>
+    <select id="pick"><option value="">Select site</option></select>
+    <button id="center">Center</button>
+    <button id="expand">⛶ Expand Map</button>
+  </div>
+
+  <div class="row">
+    <button id="start">▶ Start GPS</button>
+    <button id="stop">■ Stop</button>
+    <button id="reset">↻ Reset</button>
+  </div>
+
+  <div id="status">Enter your sites, load them, then start GPS.</div>
+  <div class="legend">
+    <span><i class="legend-purple"></i> Not covered</span>
+    <span><i class="legend-green"></i> Covered</span>
+  </div>
+  <div class="small">
+    300 m radius • 🟣 not covered • 🟢 covered • direction arrow • distance.
+    The green road portions are the portions your GPS has actually passed near.
+  </div>
+</div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        crossorigin=""></script>
+
+<script>
+const map = L.map('map',{zoomControl:true}).setView([31.5204,74.3587],14);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  maxZoom:20,
+  attribution:'&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+let sites=[];
+let siteMarkers=[];
+let roadLayers=[];
+let gpsMarker=null;
+let gpsCircle=null;
+let watchId=null;
+let currentSite=null;
+
+let lastGPS=null;
+let totalDistance=0;
+let coveredRoadDistance=0;
+let heading=0;
+let gpsActive=false;
+
+const coverageRadius=300;
+const roadMatchDistance=35;
+const sampledPoints=[];
+
+const sitesBox=document.getElementById('sites');
+const pick=document.getElementById('pick');
+const status=document.getElementById('status');
+const panel=document.getElementById('panel');
+const panelToggle=document.getElementById('panelToggle');
+
+panelToggle.onclick=()=>{
+  const collapsed=panel.classList.toggle('collapsed');
+  panelToggle.textContent=collapsed?'⌄':'⌃';
+  panelToggle.title=collapsed?'Expand controls':'Collapse controls';
+  setTimeout(()=>map.invalidateSize(),120);
+};
+
+function parseSites(){
+  const lines=sitesBox.value.split(/\n/).map(x=>x.trim()).filter(Boolean);
+  const out=[];
+  for(const line of lines){
+    const parts=line.split(/[,;\s]+/).filter(Boolean);
+    if(parts.length<3) continue;
+    const name=parts[0];
+    const lat=parseFloat(parts[1]);
+    const lon=parseFloat(parts[2]);
+    if(Number.isFinite(lat)&&Number.isFinite(lon)) out.push({name,lat,lon});
+  }
+  return out;
+}
+
+function clearSiteMarkers(){
+  siteMarkers.forEach(m=>map.removeLayer(m));
+  siteMarkers=[];
+}
+
+function loadSites(){
+  sites=parseSites();
+  clearSiteMarkers();
+  pick.innerHTML='<option value="">Select site</option>';
+
+  if(!sites.length){
+    status.textContent='No valid sites found. Use: SITE_ID, latitude, longitude';
+    return;
+  }
+
+  const bounds=[];
+  sites.forEach((s,i)=>{
+    const marker=L.marker([s.lat,s.lon],{zIndexOffset:2000}).addTo(map);
+    marker.bindTooltip(s.name,{permanent:true,direction:'top',className:'site-label'});
+    marker.bindTooltip(s.name+' • 300 m coverage',{permanent:true,direction:'top',className:'site-label'});\n    marker.bindPopup('<b>'+escapeHtml(s.name)+'</b><br>'+s.lat.toFixed(6)+', '+s.lon.toFixed(6));
+    siteMarkers.push(marker);
+
+    const zone=L.circle([s.lat,s.lon],{
+      radius:coverageRadius,
+      className:'coverage-circle',
+      color:'#1976d2',
+      fillColor:'#1976d2',
+      fillOpacity:0.07,
+      weight:3
+    }).addTo(map);
+    zone.bindTooltip('300 m coverage area',{permanent:false});
+    siteMarkers.push(zone);
+
+    bounds.push([s.lat,s.lon]);
+
+    const opt=document.createElement('option');
+    opt.value=i; opt.textContent=s.name+' — '+s.lat.toFixed(5)+', '+s.lon.toFixed(5);
+    pick.appendChild(opt);
+  });
+
+  if(bounds.length>1) map.fitBounds(bounds,{padding:[40,40]});
+  else map.setView(bounds[0],16);
+
+  currentSite=sites[0];
+  pick.value='0';
+  loadRoadsForSite(currentSite);
+
+  status.textContent=sites.length+' site(s) loaded. Select a site and start GPS.';
+}
+
+function escapeHtml(x){
+  return String(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+}
+
+pick.addEventListener('change',()=>{
+  const i=parseInt(pick.value);
+  if(Number.isFinite(i)&&sites[i]){
+    currentSite=sites[i];
+    map.setView([currentSite.lat,currentSite.lon],16);
+    loadRoadsForSite(currentSite);
+  }
+});
+
+document.getElementById('center').onclick=()=>{
+  if(currentSite) map.setView([currentSite.lat,currentSite.lon],16);
+  else if(gpsMarker) map.setView(gpsMarker.getLatLng(),17);
+};
+
+document.getElementById('load').onclick=loadSites;
+
+function toggleFullMap(){
+  const full=map.getContainer().classList.toggle('fullscreen');
+  panel.style.display=full?'none':'block';
+
+  const expandBtn=document.getElementById('expand');
+  const mapToggle=document.getElementById('mapToggle');
+
+  expandBtn.textContent=full?'✕ Close Full Map':'⛶ Expand Map';
+  mapToggle.textContent=full?'✕':'⛶';
+  mapToggle.setAttribute('aria-label',full?'Close full map':'Expand map');
+  mapToggle.title=full?'Close full map':'Expand map';
+
+  setTimeout(()=>map.invalidateSize(),150);
+}
+
+document.getElementById('expand').onclick=toggleFullMap;
+document.getElementById('mapToggle').onclick=toggleFullMap;
+
+document.getElementById('reset').onclick=()=>{
+  if(watchId!==null) navigator.geolocation.clearWatch(watchId);
+  watchId=null; gpsActive=false;
+  if(gpsMarker){map.removeLayer(gpsMarker);gpsMarker=null}
+  if(gpsCircle){map.removeLayer(gpsCircle);gpsCircle=null}
+  lastGPS=null; totalDistance=0; coveredRoadDistance=0; sampledPoints.length=0;
+  roadLayers.forEach(r=>map.removeLayer(r.layer));
+  roadLayers=[];
+  if(currentSite) loadRoadsForSite(currentSite);
+  status.textContent='Reset complete.';
+};
+
+document.getElementById('stop').onclick=()=>{
+  if(watchId!==null) navigator.geolocation.clearWatch(watchId);
+  watchId=null; gpsActive=false;
+  status.textContent='GPS stopped. Travelled: '+formatDistance(totalDistance)+' • Road covered: '+formatDistance(coveredRoadDistance);
+};
+
+document.getElementById('start').onclick=()=>{
+  if(!navigator.geolocation){
+    status.textContent='This phone/browser does not provide GPS.';
+    return;
+  }
+  if(!currentSite && sites.length) currentSite=sites[0];
+  gpsActive=true;
+  status.textContent='Requesting GPS permission…';
+  watchId=navigator.geolocation.watchPosition(onGPS,onGPSError,{
+    enableHighAccuracy:true,
+    maximumAge:1000,
+    timeout:15000
+  });
+};
+
+function onGPSError(err){
+  status.textContent='GPS error: '+err.message+' — make sure Location is enabled and permission is allowed.';
+}
+
+function onGPS(pos){
+  const lat=pos.coords.latitude;
+  const lon=pos.coords.longitude;
+  const accuracy=pos.coords.accuracy||0;
+
+  if(lastGPS){
+    const d=haversine(lastGPS.lat,lastGPS.lon,lat,lon);
+    // Ignore obvious GPS jumps while keeping normal movement.
+    if(d>1 && d<200) {
+      totalDistance+=d;
+      const b=bearing(lastGPS.lat,lastGPS.lon,lat,lon);
+      if(Number.isFinite(b)) heading=b;
+      sampledPoints.push({lat,lon});
+      markCoveredRoads(lat,lon);
+    }
+  }
+
+  lastGPS={lat,lon};
+
+  if(!gpsMarker){
+    gpsMarker=L.marker([lat,lon],{
+      icon:makeArrowIcon(heading),
+      zIndexOffset:1000
+    }).addTo(map);
+    gpsMarker.bindTooltip('You are here',{direction:'top'});
+  }else{
+    gpsMarker.setLatLng([lat,lon]);
+    gpsMarker.setIcon(makeArrowIcon(heading));
+  }
+
+  if(!gpsCircle){
+    gpsCircle=L.circle([lat,lon],{
+      radius:Math.max(accuracy,5),
+      color:'#1976d2',fillColor:'#1976d2',fillOpacity:.08,weight:1
+    }).addTo(map);
+  }else{
+    gpsCircle.setLatLng([lat,lon]).setRadius(Math.max(accuracy,5));
+  }
+
+  status.innerHTML=
+    'GPS active • ±'+Math.round(accuracy)+' m • '+
+    'Heading '+Math.round(heading)+'° • Travelled <b>'+formatDistance(totalDistance)+'</b> • Road covered <b>'+formatDistance(coveredRoadDistance)+'</b>'+
+    (currentSite?' • Site: '+escapeHtml(currentSite.name):'');
+
+  // Follow GPS only when the user is moving; don't constantly steal the map.
+  if(totalDistance>0 && totalDistance<80) {
+    // first movement only
+  }
+}
+
+function makeArrowIcon(deg){
+  return L.divIcon({
+    className:'',
+    iconSize:[42,42],
+    iconAnchor:[21,21],
+    html:'<div class="gps-arrow-wrap" style="transform:rotate('+deg+'deg)">'+
+         '<div class="gps-pulse"></div><div class="gps-arrow"></div></div>'
+  });
+}
+
+async function loadRoadsForSite(site){
+  roadLayers.forEach(r=>map.removeLayer(r.layer));
+  roadLayers=[];
+
+  if(!site) return;
+
+  status.textContent='Loading mapped driveable roads around '+site.name+'…';
+
+  const q=`[out:json][timeout:25];
+(
+  way["highway"](around:${coverageRadius},${site.lat},${site.lon});
+);
+out geom;`;
+
+  try{
+    const res=await fetch('https://overpass-api.de/api/interpreter',{
+      method:'POST',
+      body:q,
+      headers:{'Content-Type':'text/plain'}
+    });
+    if(!res.ok) throw new Error('Road map request failed');
+    const data=await res.json();
+
+    const excluded=new Set(['footway','path','cycleway','steps','pedestrian','corridor','construction']);
+    data.elements.forEach(el=>{
+      if(!el.geometry || excluded.has(el.tags?.highway)) return;
+
+      const pts=el.geometry.map(p=>[p.lat,p.lon]);
+
+      // Only show segments whose endpoints are within/very near the 300m circle.
+      const kept=[];
+      for(let i=0;i<pts.length-1;i++){
+        const a=pts[i],b=pts[i+1];
+        if(
+          haversine(site.lat,site.lon,a[0],a[1]) <= coverageRadius+20 ||
+          haversine(site.lat,site.lon,b[0],b[1]) <= coverageRadius+20
+        ){
+          kept.push([a,b]);
+        }
+      }
+      if(!kept.length) return;
+
+      // Draw each segment separately so the exact covered portion can turn green.
+      kept.forEach(pair=>{
+        const layer=L.polyline(pair,{className:'uncovered-road',color:'#7b35e8',weight:6,opacity:0.9});
+        layer.addTo(map);
+
+        roadLayers.push({
+          layer,
+          points:pair,
+          covered:[false]
+        });
+      });
+    });
+
+    status.textContent='300 m area loaded • '+roadLayers.length+
+      ' street sections • 🟣 inside 300 m / not covered • 🟢 covered';
+  }catch(e){
+    status.textContent='Could not load roads right now. Check internet connection and try again.';
+  }
+}
+
+function markCoveredRoads(lat,lon){
+  if(!currentSite) return;
+
+  // Work only inside the selected site's 300 m area.
+  if(haversine(lat,lon,currentSite.lat,currentSite.lon)>coverageRadius) return;
+
+  roadLayers.forEach(r=>{
+    if(r.covered[0]) return;
+
+    const a=r.points[0], b=r.points[1];
+    const d=pointToSegmentMeters(lat,lon,a[0],a[1],b[0],b[1]);
+
+    // If GPS is on/near this road, change ONLY that road's color.
+    if(d<=roadMatchDistance){
+      r.covered[0]=true;
+      r.layer.setStyle({
+        color:'#16a34a',
+        weight:6,
+        opacity:1
+      });
+    }
+  });
+
+  const covered=roadLayers.filter(r=>r.covered[0]).length;
+  status.innerHTML=
+    'GPS active • 🟣 Not covered • 🟢 Covered • '+
+    'Covered streets: <b>'+covered+'/'+roadLayers.length+'</b> • '+
+    'Travelled: <b>'+formatDistance(totalDistance)+'</b>';
+}
+function haversine(lat1,lon1,lat2,lon2){
+  const R=6371000, p=Math.PI/180;
+  const a=Math.sin((lat2-lat1)*p/2)**2+
+    Math.cos(lat1*p)*Math.cos(lat2*p)*Math.sin((lon2-lon1)*p/2)**2;
+  return 2*R*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+function bearing(lat1,lon1,lat2,lon2){
+  const p=Math.PI/180;
+  const y=Math.sin((lon2-lon1)*p)*Math.cos(lat2*p);
+  const x=Math.cos(lat1*p)*Math.sin(lat2*p)-
+          Math.sin(lat1*p)*Math.cos(lat2*p)*Math.cos((lon2-lon1)*p);
+  return (Math.atan2(y,x)/p+360)%360;
+}
+
+function pointToSegmentMeters(lat,lon,alat,alon,blat,blon){
+  // Local flat-earth approximation is accurate enough for a 300 m area.
+  const lat0=(lat+alat+blat)/3*Math.PI/180;
+  const kx=111320*Math.cos(lat0), ky=110540;
+  const px=(lon-alon)*kx, py=(lat-alat)*ky;
+  const bx=(blon-alon)*kx, by=(blat-alat)*ky;
+  const len2=bx*bx+by*by;
+  let t=len2?(px*bx+py*by)/len2:0;
+  t=Math.max(0,Math.min(1,t));
+  const dx=px-t*bx, dy=py-t*by;
+  return Math.sqrt(dx*dx+dy*dy);
+}
+
+function formatDistance(m){
+  return m<1000 ? Math.round(m)+' m' : (m/1000).toFixed(2)+' km';
+}
+
+/* Phone compass support: if available, improve arrow direction while stationary. */
+window.addEventListener('deviceorientationabsolute',e=>{
+  if(!gpsActive) return;
+  if(typeof e.alpha==='number' && !lastGPS){
+    heading=(360-e.alpha)%360;
+  }
+},{passive:true});
+
+window.addEventListener('deviceorientation',e=>{
+  if(!gpsActive || lastGPS) return;
+  if(typeof e.alpha==='number') heading=(360-e.alpha)%360;
+},{passive:true});
+
+// Example data is intentionally left in the box so you can replace it.
+sitesBox.value=`LHR1111, 31.4623, 74.2952`;
+</script>
+</body>
+</html>
