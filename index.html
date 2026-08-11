@@ -1,1 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Version 4 — 300m Street Coverage</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; height:100%; width:100%; font-family: -apple-system, Roboto, Arial, sans-serif; overflow:hidden; }
+  #app { position:relative; height:100vh; width:100vw; }
+  #map { position:absolute; top:0; left:0; right:0; bottom:0; z-index:1; }
 
+  #panel {
+    position:absolute; top:0; left:0; right:0; z-index:1000;
+    background:#fff; box-shadow:0 2px 6px rgba(0,0,0,0.25);
+    padding:8px 10px; font-size:13px; max-height:70vh; overflow-y:auto;
+  }
+  #panel.collapsed .panelBody { display:none; }
+  #panelHeader { display:flex; justify-content:space-between; align-items:center; }
+  #panelHeader b { font-size:14px; }
+  #collapseBtn {
+    border:none; background:#eee; border-radius:6px; padding:4px 10px; font-size:15px; cursor:pointer;
+  }
+  .row { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; }
+  textarea#siteInput {
+    width:100%; height:54px; font-size:13px; padding:6px; border:1px solid #ccc; border-radius:6px; resize:vertical;
+  }
+  button.ctl {
+    flex:1; min-width:80px; padding:8px 6px; border:none; border-radius:6px; background:#1a73e8; color:#fff;
+    font-size:13px; cursor:pointer;
+  }
+  button.ctl.secondary { background:#5f6368; }
+  button.ctl.danger { background:#d93025; }
+  button.ctl.stop { background:#e8710a; }
+  button.ctl:disabled { background:#aaa; cursor:not-allowed; }
+  select#siteSelect { flex:1; min-width:100px; padding:6px; border-radius:6px; border:1px solid #ccc; }
+  #stats { margin-top:8px; display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; font-size:12.5px; }
+  #stats div span.lbl { color:#555; }
+  #stats div span.val { font-weight:600; }
+
+  #expandMapBtn {
+    position:absolute; z-index:1000; top:8px; right:8px; background:#fff; border:none; border-radius:6px;
+    width:34px; height:34px; box-shadow:0 2px 6px rgba(0,0,0,0.3); font-size:16px; cursor:pointer;
+  }
+  #exitFullscreenBtn {
+    position:absolute; z-index:2000; bottom:16px; right:16px; background:#d93025; color:#fff; border:none;
+    border-radius:50%; width:46px; height:46px; font-size:20px; box-shadow:0 2px 8px rgba(0,0,0,0.4); cursor:pointer;
+    display:none;
+  }
+  body.fullscreen #panel { display:none; }
+  body.fullscreen #exitFullscreenBtn { display:block; }
+  body.fullscreen #expandMapBtn { display:none; }
+
+  .gpsArrow {
+    width:26px; height:26px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .gpsArrow svg { filter: drop-shadow(0 0 2px rgba(0,0,0,0.5)); }
+
+  .siteLabel { font-size:12px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+
+  <button id="expandMapBtn" title="Expand map">⛶</button>
+  <button id="exitFullscreenBtn" title="Exit fullscreen">✕</button>
+
+  <div id="panel">
+    <div id="panelHeader">
+      <b>300m Street Coverage</b>
+      <button id="collapseBtn">⌃</button>
+    </div>
+    <div class="panelBody">
+      <textarea id="siteInput" placeholder="LHR1234, 31.4623, 74.2952&#10;One site per line">LHR 31.444117, 74.268030</textarea>
+      <div class="row">
+        <button class="ctl" id="loadSitesBtn">Load Sites</button>
+        <select id="siteSelect"><option value="">-- sites --</option></select>
+        <button class="ctl secondary" id="centerBtn">Center</button>
+      </div>
+      <div class="row">
+        <button class="ctl" id="startGpsBtn">▶ Start GPS</button>
+        <button class="ctl stop" id="stopGpsBtn" disabled>■ Stop GPS</button>
+        <button class="ctl danger" id="resetBtn">↻ Reset</button>
+      </div>
+      <div id="stats">
+        <div><span class="lbl">Travelled:</span> <span class="val" id="distVal">0.00 km</span></div>
+        <div><span class="lbl">GPS accuracy:</span> <span class="val" id="accVal">--</span></div>
+        <div><span class="lbl">Covered streets:</span> <span class="val" id="coveredVal">0 / 0</span></div>
+        <div><span class="lbl">Coverage:</span> <span class="val" id="pctVal">0%</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---------- Map setup ----------
+const map = L.map('map', { zoomControl: true }).setView([31.4623, 74.2952], 16);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 20,
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+// Panes so site markers always render above street lines & GPS marker sits above streets too
+map.createPane('streetsPane'); map.getPane('streetsPane').style.zIndex = 410;
+map.createPane('circlePane');  map.getPane('circlePane').style.zIndex  = 420;
+map.createPane('gpsPane');     map.getPane('gpsPane').style.zIndex     = 630;
+map.createPane('sitePane');    map.getPane('sitePane').style.zIndex    = 650;
+
+// ---------- State ----------
+let sites = [];            // {id, lat, lon, marker, circle}
+let ways = new Map();      // wayId -> {coords:[[lat,lon],...], segments:[{a,b,covered,polyline}]}
+let allSegments = [];      // flat list of every segment across all ways, for fast coverage checks
+let watchId = null;
+let lastPos = null;        // {lat, lon, t, accuracy}
+let totalDistance = 0;     // meters
+let gpsMarker = null;
+let lastHeading = 0;
+
+const PURPLE = '#9b30ff';
+const GREEN = '#2ecc71';
+const TOLERANCE_M = 18;         // road matching tolerance
+const MAX_ACCURACY_FOR_DIST = 30; // ignore distance accumulation if accuracy worse than this (m)
+const MIN_MOVE_M = 3;           // ignore GPS jitter below this
+const MAX_SPEED_MS = 55;        // ~198 km/h, filters GPS jump outliers
+
+// ---------- Helpers ----------
+function toRad(d){ return d * Math.PI / 180; }
+
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function bearing(lat1, lon1, lat2, lon2) {
+  const y = Math.sin(toRad(lon2-lon1)) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1))*Math.sin(toRad(lat2)) - Math.sin(toRad(lat1))*Math.cos(toRad(lat2))*Math.cos(toRad(lon2-lon1));
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+// project lat/lon to local XY meters relative to a reference point (accurate enough at <1km scale)
+function project(lat, lon, refLat, refLon) {
+  const x = (lon - refLon) * Math.cos(toRad(refLat)) * 111320;
+  const y = (lat - refLat) * 111320;
+  return [x, y];
+}
+
+function pointToSegmentDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx*dx + dy*dy;
+  let t = len2 === 0 ? 0 : ((px-ax)*dx + (py-ay)*dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t*dx, cy = ay + t*dy;
+  return Math.hypot(px-cx, py-cy);
+}
+
+function minDistanceToWay(lat, lon, coords) {
+  let min = Infinity;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const [ax, ay] = project(coords[i][0], coords[i][1], lat, lon);
+    const [bx, by] = project(coords[i+1][0], coords[i+1][1], lat, lon);
+    const d = pointToSegmentDist(0, 0, ax, ay, bx, by);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
+function pointToSegmentDistLL(lat, lon, [alat, alon], [blat, blon]) {
+  // same as minDistanceToWay but for a single a-b pair, projected relative to the query point
+  const [ax, ay] = project(alat, alon, lat, lon);
+  const [bx, by] = project(blat, blon, lat, lon);
+  return pointToSegmentDist(0, 0, ax, ay, bx, by);
+}
+
+// Break a way's raw OSM coords into short pieces (<= maxLen meters each),
+// inserting interpolated points where consecutive OSM nodes are far apart.
+// This is what lets us color only the exact stretch someone walked, instead
+// of the whole way (which on straight roads can be a single long segment).
+function densify(coords, maxLen) {
+  const out = [coords[0]];
+  for (let i = 0; i < coords.length - 1; i++) {
+    const [lat1, lon1] = coords[i];
+    const [lat2, lon2] = coords[i+1];
+    const d = haversine(lat1, lon1, lat2, lon2);
+    if (d > maxLen) {
+      const n = Math.ceil(d / maxLen);
+      for (let k = 1; k < n; k++) {
+        const f = k / n;
+        out.push([lat1 + (lat2-lat1)*f, lon1 + (lon2-lon1)*f]);
+      }
+    }
+    out.push([lat2, lon2]);
+  }
+  return out;
+}
+
+const SEGMENT_LEN_M = 4;  // target length of each colorable street piece — smaller = more precise painting
+
+// ---------- Site parsing / loading ----------
+function parseSites(text) {
+  return text.split('\n').map(l => l.trim()).filter(Boolean).map((line, idx) => {
+    // Find the first two decimal numbers on the line — works whether the
+    // separator is a comma, space, or a mix, and ignores trailing symbols/emoji.
+    const nums = line.match(/-?\d+\.\d+/g);
+    if (!nums || nums.length < 2) return null;
+    const lat = parseFloat(nums[0]);
+    const lon = parseFloat(nums[1]);
+    if (isNaN(lat) || isNaN(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+
+    // Site ID = whatever text precedes the first number, with separators trimmed off.
+    let id = line.split(nums[0])[0].replace(/[,;:]+$/, '').trim();
+    if (!id) id = 'SITE' + (idx + 1);
+    return { id, lat, lon };
+  }).filter(Boolean);
+}
+
+function siteIcon() {
+  return L.divIcon({
+    className: '',
+    html: '<div style="font-size:28px; line-height:28px; transform:translateY(-4px);">📍</div>',
+    iconSize: [28, 28],
+    iconAnchor: [14, 26]
+  });
+}
+
+function clearSitesLayer() {
+  sites.forEach(s => {
+    if (s.marker) map.removeLayer(s.marker);
+    if (s.circle) map.removeLayer(s.circle);
+  });
+  sites = [];
+}
+
+function clearWays() {
+  allSegments.forEach(seg => map.removeLayer(seg.polyline));
+  ways.clear();
+  allSegments = [];
+}
+
+async function loadSites() {
+  const parsed = parseSites(document.getElementById('siteInput').value);
+  if (parsed.length === 0) { alert('No valid site lines found. Format: SITE_ID, LAT, LON'); return; }
+
+  clearSitesLayer();
+  clearWays();
+
+  const select = document.getElementById('siteSelect');
+  select.innerHTML = '<option value="">-- sites --</option>';
+
+  parsed.forEach(s => {
+    const marker = L.marker([s.lat, s.lon], { icon: siteIcon(), pane: 'sitePane' }).addTo(map);
+    marker.bindPopup(`📍 <b>${s.id}</b><br>${s.lat.toFixed(5)}, ${s.lon.toFixed(5)}`);
+    const circle = L.circle([s.lat, s.lon], {
+      radius: 300, color: '#1a73e8', weight: 2, fillColor: '#1a73e8', fillOpacity: 0.06, pane: 'circlePane'
+    }).addTo(map);
+    s.marker = marker; s.circle = circle;
+    sites.push(s);
+
+    const opt = document.createElement('option');
+    opt.value = s.id; opt.textContent = s.id;
+    select.appendChild(opt);
+  });
+
+  if (sites.length === 1) {
+    map.setView([sites[0].lat, sites[0].lon], 17);
+  } else {
+    const group = new L.featureGroup(sites.map(s => s.circle));
+    map.fitBounds(group.getBounds(), { padding: [30,30] });
+  }
+
+  await loadStreetsForSites();
+  refreshStats();
+}
+
+async function loadStreetsForSites() {
+  if (sites.length === 0) return;
+  const clauses = sites.map(s => `way(around:300,${s.lat},${s.lon})[highway];`).join('\n');
+  const query = `[out:json][timeout:25];(${clauses});out body;>;out skel qt;`;
+  const url = 'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query);
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Overpass request failed: ' + res.status);
+    const data = await res.json();
+
+    const nodeLookup = new Map();
+    data.elements.forEach(el => {
+      if (el.type === 'node') nodeLookup.set(el.id, [el.lat, el.lon]);
+    });
+
+    data.elements.forEach(el => {
+      if (el.type === 'way' && el.nodes && el.nodes.length >= 2) {
+        if (ways.has(el.id)) return; // dedupe across overlapping site circles
+        const coords = el.nodes.map(id => nodeLookup.get(id)).filter(Boolean);
+        if (coords.length < 2) return;
+
+        const dense = densify(coords, SEGMENT_LEN_M);
+        const segments = [];
+        for (let i = 0; i < dense.length - 1; i++) {
+          const a = dense[i], b = dense[i+1];
+          const polyline = L.polyline([a, b], { color: PURPLE, weight: 4, opacity: 0.85, pane: 'streetsPane' }).addTo(map);
+          const seg = { a, b, covered: false, polyline };
+          segments.push(seg);
+          allSegments.push(seg);
+        }
+        ways.set(el.id, { coords, segments });
+      }
+    });
+  } catch (err) {
+    alert('Failed to load streets from OpenStreetMap (Overpass API). Check your internet connection and try again.\n\n' + err.message);
+  }
+}
+
+// ---------- GPS ----------
+function gpsArrowIcon(headingDeg) {
+  return L.divIcon({
+    className: '',
+    html: `<div class="gpsArrow" style="transform:rotate(${headingDeg}deg);">
+      <svg width="26" height="26" viewBox="0 0 26 26">
+        <circle cx="13" cy="13" r="11" fill="#1a73e8" fill-opacity="0.18"/>
+        <path d="M13 3 L20 20 L13 16 L6 20 Z" fill="#1a73e8" stroke="#ffffff" stroke-width="1.5"/>
+      </svg>
+    </div>`,
+    iconSize: [26, 26],
+    iconAnchor: [13, 13]
+  });
+}
+
+function startGps() {
+  if (!navigator.geolocation) { alert('Geolocation not supported on this browser.'); return; }
+  watchId = navigator.geolocation.watchPosition(onGpsUpdate, onGpsError, {
+    enableHighAccuracy: true, maximumAge: 1000, timeout: 15000
+  });
+  document.getElementById('startGpsBtn').disabled = true;
+  document.getElementById('stopGpsBtn').disabled = false;
+}
+
+function stopGps() {
+  if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+  watchId = null;
+  document.getElementById('startGpsBtn').disabled = false;
+  document.getElementById('stopGpsBtn').disabled = true;
+}
+
+function onGpsError(err) {
+  alert('GPS error: ' + err.message);
+}
+
+function onGpsUpdate(pos) {
+  const lat = pos.coords.latitude;
+  const lon = pos.coords.longitude;
+  const accuracy = pos.coords.accuracy;
+  const now = pos.timestamp;
+
+  // heading: use device-provided heading if available, else derive from movement
+  let heading = lastHeading;
+  if (pos.coords.heading !== null && pos.coords.heading !== undefined && !isNaN(pos.coords.heading)) {
+    heading = pos.coords.heading;
+  } else if (lastPos) {
+    const moved = haversine(lastPos.lat, lastPos.lon, lat, lon);
+    if (moved > MIN_MOVE_M) heading = bearing(lastPos.lat, lastPos.lon, lat, lon);
+  }
+  lastHeading = heading;
+
+  // update / create GPS marker
+  if (!gpsMarker) {
+    gpsMarker = L.marker([lat, lon], { icon: gpsArrowIcon(heading), pane: 'gpsPane' }).addTo(map);
+  } else {
+    gpsMarker.setLatLng([lat, lon]);
+    gpsMarker.setIcon(gpsArrowIcon(heading));
+  }
+
+  // distance accumulation with outlier filtering
+  if (lastPos) {
+    const d = haversine(lastPos.lat, lastPos.lon, lat, lon);
+    const dt = Math.max(0.001, (now - lastPos.t) / 1000);
+    const speed = d / dt;
+    const goodAccuracy = accuracy <= MAX_ACCURACY_FOR_DIST;
+    if (goodAccuracy && d >= MIN_MOVE_M && speed <= MAX_SPEED_MS) {
+      totalDistance += d;
+    }
+  }
+  lastPos = { lat, lon, t: now, accuracy };
+
+  // road coverage check
+  checkCoverage(lat, lon);
+
+  document.getElementById('accVal').textContent = '±' + Math.round(accuracy) + ' m';
+  refreshStats();
+}
+
+function checkCoverage(lat, lon) {
+  // Find the SINGLE closest uncovered segment to this GPS fix (not every
+  // segment within tolerance) — otherwise one ping near a corner can paint
+  // several neighboring pieces, or even a parallel street, all at once.
+  let bestSeg = null;
+  let bestDist = Infinity;
+
+  for (const seg of allSegments) {
+    if (seg.covered) continue;
+    // quick bbox reject
+    const nearA = Math.abs(seg.a[0]-lat) < 0.006 && Math.abs(seg.a[1]-lon) < 0.006;
+    const nearB = Math.abs(seg.b[0]-lat) < 0.006 && Math.abs(seg.b[1]-lon) < 0.006;
+    if (!nearA && !nearB) continue;
+    const dist = pointToSegmentDistLL(lat, lon, seg.a, seg.b);
+    if (dist < bestDist) { bestDist = dist; bestSeg = seg; }
+  }
+
+  if (bestSeg && bestDist <= TOLERANCE_M) {
+    bestSeg.covered = true;
+    bestSeg.polyline.setStyle({ color: GREEN });
+  }
+}
+
+// ---------- Stats ----------
+function refreshStats() {
+  document.getElementById('distVal').textContent = (totalDistance/1000).toFixed(2) + ' km';
+  const total = allSegments.length;
+  let covered = 0;
+  allSegments.forEach(seg => { if (seg.covered) covered++; });
+  document.getElementById('coveredVal').textContent = `${covered} / ${total}`;
+  document.getElementById('pctVal').textContent = total > 0 ? Math.round((covered/total)*100) + '%' : '0%';
+}
+
+// ---------- Reset ----------
+function resetCoverage() {
+  allSegments.forEach(seg => { seg.covered = false; seg.polyline.setStyle({ color: PURPLE }); });
+  totalDistance = 0;
+  lastPos = null;
+  document.getElementById('accVal').textContent = '--';
+  refreshStats();
+}
+
+// ---------- Controls wiring ----------
+document.getElementById('loadSitesBtn').addEventListener('click', loadSites);
+document.getElementById('startGpsBtn').addEventListener('click', startGps);
+document.getElementById('stopGpsBtn').addEventListener('click', stopGps);
+document.getElementById('resetBtn').addEventListener('click', resetCoverage);
+
+document.getElementById('centerBtn').addEventListener('click', () => {
+  const id = document.getElementById('siteSelect').value;
+  const site = sites.find(s => s.id === id);
+  if (site) {
+    map.setView([site.lat, site.lon], 17);
+  } else if (sites.length) {
+    const group = new L.featureGroup(sites.map(s => s.circle));
+    map.fitBounds(group.getBounds(), { padding: [30,30] });
+  }
+});
+
+document.getElementById('siteSelect').addEventListener('change', (e) => {
+  const site = sites.find(s => s.id === e.target.value);
+  if (site) map.setView([site.lat, site.lon], 17);
+});
+
+document.getElementById('collapseBtn').addEventListener('click', () => {
+  const panel = document.getElementById('panel');
+  panel.classList.toggle('collapsed');
+  document.getElementById('collapseBtn').textContent = panel.classList.contains('collapsed') ? '⌄' : '⌃';
+});
+
+document.getElementById('expandMapBtn').addEventListener('click', () => {
+  document.body.classList.add('fullscreen');
+  setTimeout(() => map.invalidateSize(), 150);
+});
+document.getElementById('exitFullscreenBtn').addEventListener('click', () => {
+  document.body.classList.remove('fullscreen');
+  setTimeout(() => map.invalidateSize(), 150);
+});
+
+// Load default site on first launch for convenience
+window.addEventListener('load', () => { loadSites(); });
+</script>
+</body>
+</html>
